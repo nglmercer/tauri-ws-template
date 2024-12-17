@@ -3743,6 +3743,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-shell",
  "tokio",
+ "url",
  "warp",
 ]
 

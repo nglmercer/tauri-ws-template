@@ -1,80 +1,126 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use enigo::{
-    Direction::{Click, Press, Release},
-    Enigo, Key, Keyboard, Settings
-};
-use std::thread;
-use std::time::Duration;
 use std::collections::HashMap;
 
 use warp::Filter;
 use futures_util::{StreamExt, SinkExt};
-use tokio::task::spawn_blocking; // Importar solo spawn_blocking directamente
+/* use tokio::task::spawn_blocking; // Importar solo spawn_blocking directamente
 use tokio::sync::mpsc;
+use serde_json::Value; */
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+// Arc para crear un mutex
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use url::Url; // Asegúrate de tener esta importación
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Clone, Debug)]
+pub struct WebSocketWindowManager {
+    app_handle: AppHandle,
+    windows: Arc<Mutex<HashMap<String, Url>>>,
+}
+
+impl WebSocketWindowManager {
+    pub fn new(app_handle: AppHandle) -> Self {
+        WebSocketWindowManager {
+            app_handle,
+            windows: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub async fn create_or_open_window(&self, label: &str, url: &str) -> Result<(), String> {
+        let parsed_url = Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
+        
+        let mut windows = self.windows.lock().await;
+        
+        // Si la ventana ya existe, enfócarla o traerla al frente
+        if self.app_handle.get_webview_window(label).is_some() {
+            if let Some(window) = self.app_handle.get_webview_window(label) {
+                window.show().map_err(|e| format!("Error showing window: {}", e))?;
+                window.set_focus().map_err(|e| format!("Error focusing window: {}", e))?;
+                return Ok(());
+            }
+        }
+        
+        // Crear nueva ventana si no existe
+        WebviewWindowBuilder::new(&self.app_handle, label, WebviewUrl::External(parsed_url.clone()))
+            .title(format!("Ventana: {}", label))
+            .resizable(true)
+            .transparent(false)
+            .build()
+            .map_err(|e| format!("Failed to create webview: {}", e))?;
+        
+        // Registrar la ventana en el mapa
+        windows.insert(label.to_string(), parsed_url);
+        
+        Ok(())
+    }
+
+    pub async fn close_window(&self, label: &str) -> Result<(), String> {
+        let mut windows = self.windows.lock().await;
+        
+        if let Some(window) = self.app_handle.get_webview_window(label) {
+            window.close().map_err(|e| format!("Error closing window: {}", e))?;
+            windows.remove(label);
+            Ok(())
+        } else {
+            Err(format!("Window with label '{}' not found", label))
+        }
+    }
+
+    pub async fn list_windows(&self) -> Vec<String> {
+        let windows = self.windows.lock().await;
+        windows.keys().cloned().collect()
+    }
+
+    pub async fn get_window_url(&self, label: &str) -> Option<Url> {
+        let windows = self.windows.lock().await;
+        windows.get(label).cloned()
+    }
+}
+
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct MyMessage {
     action: String,
-    data: String,
+    label: Option<String>,
+    url: Option<String>,
 }
 
-
-#[tokio::main]
-async fn main() {
-    // Ejecutar tareas en paralelo: servidor WebSocket y bucle de intervalo
-    tokio::spawn(async {
-        let keys_by_platform = get_keys_by_platform();
-        example_usage();
-        // Convertir a JSON para facilitar la lectura
-        let json_output = serde_json::to_string_pretty(&keys_by_platform).unwrap();
-        println!("{}", json_output);
-        // Ruta para el WebSocket
-        let websocket_route = warp::path("ws")
-            .and(warp::ws())
-            .map(|ws: warp::ws::Ws| ws.on_upgrade(handle_connection));
-
-        println!("WebSocket server running on ws://localhost:8080/ws");
-
-        // Iniciar el servidor
-        warp::serve(websocket_route).run(([127, 0, 0, 1], 8080)).await;
-        
-    });
-
-    // Ejecutar tauriarm_lib::run en el hilo principal
-    tauriarm_lib::run();
-
-
-}
-
-async fn handle_connection(ws: warp::ws::WebSocket) {
+async fn handle_connection(
+    ws: warp::ws::WebSocket, 
+    window_manager: Arc<Mutex<WebSocketWindowManager>>
+) {
     println!("New WebSocket connection established!");
 
-    // Dividir el WebSocket en transmisor y receptor
+    // Split the WebSocket into sender and receiver
     let (mut tx, mut rx) = ws.split();
 
-    // Escuchar mensajes del cliente
+    // Listen for client messages
     while let Some(result) = rx.next().await {
         match result {
             Ok(message) => {
                 if let Ok(text) = message.to_str() {
                     println!("Received: {}", text);
 
-                    // Intentar deserializar el mensaje recibido como JSON
+                    // Try to deserialize the received message as JSON
                     match serde_json::from_str::<MyMessage>(text) {
                         Ok(parsed_message) => {
-                            // Llamar a una función para manejar el mensaje
-                            handle_message(parsed_message).await;
+                            // Clone the window manager for async use
+                            let manager_clone = Arc::clone(&window_manager);
+                            
+                            // Handle the message
+                            tokio::spawn(async move {
+                                handle_message(parsed_message, manager_clone).await;
+                            });
+
+                            // Send a response back
+                            let response = format!("Server processed: {}", text);
+                            let _ = tx.send(warp::ws::Message::text(response)).await;
                         }
                         Err(_) => {
                             eprintln!("Invalid JSON received");
                         }
                     }
-
-                    // Enviar una respuesta de vuelta
-                    let response = format!("Server says: {}", text);
-                    let _ = tx.send(warp::ws::Message::text(response)).await;
                 }
             }
             Err(e) => {
@@ -85,108 +131,63 @@ async fn handle_connection(ws: warp::ws::WebSocket) {
     }
 }
 
-// Esta función maneja el mensaje una vez deserializado
-async fn handle_message(message: MyMessage) {
+async fn handle_message(
+    message: MyMessage, 
+    window_manager: Arc<Mutex<WebSocketWindowManager>>
+) {
+    let mut manager = window_manager.lock().await;
+
     match message.action.as_str() {
-        "say_hello" => {
-            println!("Hello received: {}", message.data);
+        "create_window" => {
+            if let (Some(label), Some(url)) = (&message.label, &message.url) {
+                match manager.create_or_open_window(label, url).await {
+                    Ok(_) => println!("Window created: {}", label),
+                    Err(e) => eprintln!("Failed to create window: {}", e),
+                }
+            } else {
+                eprintln!("Missing label or URL for window creation");
+            }
         }
-        "say_goodbye" => {
-            println!("Goodbye received: {}", message.data);
+        "close_window" => {
+            if let Some(label) = &message.label {
+                match manager.close_window(label).await {
+                    Ok(_) => println!("Window closed: {}", label),
+                    Err(e) => eprintln!("Failed to close window: {}", e),
+                }
+            } else {
+                eprintln!("Missing label for window closure");
+            }
         }
         _ => {
             println!("Unknown action: {}", message.action);
         }
     }
 }
-async fn enigo_test() {
-    env_logger::try_init().ok();
-    thread::sleep(Duration::from_secs(5));
-    let mut enigo = Enigo::new(&Settings::default()).unwrap();
 
-    // write text
-    enigo
-        .text("Hello World! here is a lot of text  ❤️")
-        .unwrap();
+// In your main function, set up the WebSocket server with the window manager
+#[tokio::main]
+async fn main() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let window_manager = Arc::new(Mutex::new(WebSocketWindowManager::new(app_handle)));
+            
+            let ws_window_manager = Arc::clone(&window_manager);
 
-    // select all
-    enigo.key(Key::Control, Press).unwrap();
-    enigo.key(Key::Unicode('a'), Click).unwrap();
-    enigo.key(Key::Control, Release).unwrap();
+            tokio::spawn(async move {
+                let websocket_route = warp::path("ws")
+                    .and(warp::ws())
+                    .map(move |ws: warp::ws::Ws| {
+                        let wm = Arc::clone(&ws_window_manager);
+                        ws.on_upgrade(move |socket| handle_connection(socket, wm))
+                    });
 
-}
-fn get_keys_by_platform() -> HashMap<String, Vec<String>> {
-    let mut enigo = Enigo::new(&Settings::default()).unwrap();
-    
-    // Ejemplo de keys comunes por plataforma
-    let mut platform_keys = HashMap::new();
-    
-    #[cfg(target_os = "windows")]
-    {
-        platform_keys.insert("windows".to_string(), vec![
-            "VK_RETURN".to_string(),
-            "VK_SHIFT".to_string(),
-            "VK_CONTROL".to_string(),
-            "VK_MENU".to_string(), // Alt key
-            "VK_ESCAPE".to_string()
-        ]);
-    }
-    
-    #[cfg(target_os = "macos")]
-    {
-        platform_keys.insert("macos".to_string(), vec![
-            "kVK_Return".to_string(),
-            "kVK_Shift".to_string(),
-            "kVK_Command".to_string(),
-            "kVK_Option".to_string(),
-            "kVK_Escape".to_string()
-        ]);
-    }
-    
-    #[cfg(target_os = "linux")]
-    {
-        platform_keys.insert("linux".to_string(), vec![
-            "Return".to_string(),
-            "Shift".to_string(),
-            "Control".to_string(),
-            "Alt".to_string(),
-            "Escape".to_string()
-        ]);
-    }
-    
-    platform_keys
-}
-fn execute_key_combinations(combinations: &[(Option<Key>, Key, Option<u64>)]) {
-    let mut enigo = Enigo::new(&Settings::default()).unwrap();
+                println!("WebSocket server running on ws://localhost:8080/ws");
+                warp::serve(websocket_route).run(([127, 0, 0, 1], 8080)).await;
+            });
 
-    for (modifier, main_key, delay) in combinations {
-        // Press modifier key if exists
-        if let Some(mod_key) = modifier {
-            enigo.key(mod_key.clone(), Press).unwrap();
-        }
-
-        // Press and release the main key
-        enigo.key(main_key.clone(), Click).unwrap();
-
-        // Release modifier key if exists
-        if let Some(mod_key) = modifier {
-            enigo.key(mod_key.clone(), Release).unwrap();
-        }
-
-        // Add delay if specified
-        if let Some(ms) = delay {
-            thread::sleep(Duration::from_millis(*ms));
-        }
-    }
-}
-
-// Example usage
-fn example_usage() {
-    enigo_test();
-    let combinations = vec![
-        (Some(Key::Control), Key::Unicode('a'), Some(50)),  // Select all
-        (Some(Key::Control), Key::Unicode('c'), Some(50)),  // Copy
-    ];
-    
-    execute_key_combinations(&combinations);
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
