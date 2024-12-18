@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 use futures_util::{SinkExt, StreamExt};
 use warp::Filter;
-/* use tokio::task::spawn_blocking; // Importar solo spawn_blocking directamente
+use tokio::task::spawn_blocking; // Importar solo spawn_blocking directamente
+/* 
 use tokio::sync::mpsc;
 use serde_json::Value; */
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex;
 use url::Url; // Asegúrate de tener esta importación
-
+/// uso de librerias o api de tauri     tauriarm_lib::run(); utiliza el nombre del projecto y lib es el archivo lib.rs
 #[derive(Clone, Debug)]
 pub struct WebSocketWindowManager {
     app_handle: AppHandle,
@@ -174,9 +175,12 @@ async fn handle_message(message: MyMessage, window_manager: Arc<Mutex<WebSocketW
 // In your main function, set up the WebSocket server with the window manager
 #[tokio::main]
 async fn main() {
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![get_file_path])
         .setup(|app| {
             let app_handle = app.handle().clone();
             let window_manager = Arc::new(Mutex::new(WebSocketWindowManager::new(app_handle)));
@@ -202,4 +206,13 @@ async fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+#[tauri::command]
+fn greet(name: &str) -> String {
+    format!("Hello, {}! You've been greeted from Rust!", name)
+}
+#[tauri::command]
+fn get_file_path(file_path: String) -> String {
+    // Aquí puedes procesar el archivo según sea necesario
+    file_path
 }
