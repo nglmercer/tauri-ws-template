@@ -34,13 +34,13 @@ window.addEventListener("DOMContentLoaded", () => {
     greet();
   });
 });
-setTimeout(() => {
+/* setTimeout(() => {
   const create = { "action": "create_window", "label": "test", "url": "http://example.com" }
   const close = { "action": "close_window", "label": "test" }
   const list = { "action": "list_windows" }
   const get = { "action": "get_window_url", "label": "test" }
   socket.send(JSON.stringify(create));
+}, 5555); */
 /*   socket.send(JSON.stringify(close));
   socket.send(JSON.stringify(list));
   socket.send(JSON.stringify(get)); */
-}, 5555);

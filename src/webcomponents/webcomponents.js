@@ -7046,11 +7046,14 @@ galeriaElementos.agregarElemento({
       }); */
 })();
 async function processDroppedFile(file,e) {
-  if (file.path) {
+  console.log("file",file)
+    const filePath = await window.__TAURI__.path.resolve(file.path);
+    console.log("filePath",filePath)
+/*   if (file.path) {
       await processFileWithPath(file);
   } else {
       await processFileWithoutPath(file);
-  }
+  } */
 }
 async function processFileWithPath(file) {
   console.log('Archivo cargado:', file);

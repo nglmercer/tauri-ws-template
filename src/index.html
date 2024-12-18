@@ -8,9 +8,26 @@
     <script type="module" src="/main.js" defer></script>
     <script src="./webcomponents/webcomponents.js"></script>
   </head>
-
+  <style>
+            #drop-zone {
+            width: 300px;
+            height: 200px;
+            border: 2px dashed #ccc;
+            text-align: center;
+            padding: 20px;
+            margin: 20px;
+        }
+        #drop-zone.dragover {
+            background-color: #f0f0f0;
+            border-color: #000;
+        }
+        #file-list {
+            margin-top: 20px;
+        }
+  </style>
   <body>
     <main class="container">
+
       <h1>Welcome to Tauri</h1>
 
       <div class="row">
@@ -35,6 +52,50 @@
         <button type="submit">Greet</button>
       </form>
       <p id="greet-msg"></p>
+      <div id="container">
+          <drag-and-drop id="drag-and-drop"></drag-and-drop>
+    </div>
+    <script type="module">
+
+      /* mport { listen } from '@tauri-apps/api/event'; */
+      const { listen } = window.__TAURI__.event;
+async function setupDragEvents() {
+  const unlistenDragEnter = await listen('tauri://drag-enter', (event) => {
+    console.log('Elemento entró en la zona de arrastre:', event);
+  });
+
+  const unlistenDragOver = await listen('tauri://drag-over', (event) => {
+    console.log('Elemento arrastrado sobre la zona de destino:', event);
+  });
+
+  const unlistenDragDrop = await listen('tauri://drag-drop', (event) => {
+    console.log('Elemento soltado en la zona de destino:', event);
+  });
+
+  const unlistenDragLeave = await listen('tauri://drag-leave', (event) => {
+    console.log('Elemento salió de la zona de destino sin ser soltado:', event);
+  });
+
+  // Retorna una función para eliminar los escuchadores cuando ya no sean necesarios
+  return () => {
+    unlistenDragEnter();
+    unlistenDragOver();
+    unlistenDragDrop();
+    unlistenDragLeave();
+  };
+}
+setupDragEvents().then((unlisten) => {
+  // La función `unlisten` elimina los eventos cuando ya no son necesarios
+  console.log('Eventos de drag and drop activos');
+});
+    </script>
+    <script >
+      //// exist web api speech recognition and speech synthesis
+      const web = window.__TAURI__.web;
+      console.log("web api",web)
+      const synth = window.speechSynthesis;
+      console.log("speechSynthesis",synth)
+    </script>
     </main>
   </body>
 </html>
