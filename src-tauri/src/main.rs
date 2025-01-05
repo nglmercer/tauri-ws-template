@@ -1,23 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::collections::HashMap;
-
 use futures_util::{SinkExt, StreamExt};
 use warp::Filter;
-use tokio::task::spawn_blocking; // Importar solo spawn_blocking directamente
-/* 
-use tokio::sync::mpsc;
-use serde_json::Value; */
+use warp::ws::{WebSocket, Message};
 use serde::{Deserialize, Serialize};
-// Arc para crear un mutex
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex;
-use url::Url; // Asegúrate de tener esta importación
-/// uso de librerias o api de tauri     tauriarm_lib::run(); utiliza el nombre del projecto y lib es el archivo lib.rs
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc;
+use url::Url;
+use rdev::{listen, Event, EventType, Key};
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct KeyEvent {
+    key: String,
+    event_type: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct WebSocketWindowManager {
     app_handle: AppHandle,
     windows: Arc<Mutex<HashMap<String, Url>>>,
+    clients: Arc<Mutex<HashMap<String, UnboundedSender<Message>>>>,
 }
 
 impl WebSocketWindowManager {
@@ -25,9 +31,9 @@ impl WebSocketWindowManager {
         WebSocketWindowManager {
             app_handle,
             windows: Arc::new(Mutex::new(HashMap::new())),
+            clients: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-
     pub async fn create_or_open_window(&self, label: &str, url: &str) -> Result<(), String> {
         let parsed_url = Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
 
@@ -87,8 +93,54 @@ impl WebSocketWindowManager {
         let windows = self.windows.lock().await;
         windows.get(label).cloned()
     }
+    pub async fn register_client(&self, client_id: String, tx: UnboundedSender<Message>) {
+        let mut clients = self.clients.lock().await;
+        clients.insert(client_id, tx);
+    }
+
+    pub async fn broadcast_message(&self, message: &str) {
+        let clients = self.clients.lock().await;
+        for (_, tx) in clients.iter() {
+            let _ = tx.send(Message::text(message));
+        }
+    }
 }
 
+
+async fn listen_global_key_events(window_manager: Arc<Mutex<WebSocketWindowManager>>) {
+    // Crear un canal para enviar eventos de teclado desde el hilo de `rdev` al bucle de Tokio
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    // Ejecutar `listen` en un hilo separado
+    std::thread::spawn(move || {
+        if let Err(error) = listen(move |event: Event| {
+            if let EventType::KeyPress(key) = event.event_type {
+                let key_str = match key {
+                    Key::Unknown(code) => format!("Unknown({})", code),
+                    _ => format!("{:?}", key),
+                };
+
+                // Enviar el evento de teclado a través del canal
+                if let Err(e) = tx.send(key_str) {
+                    eprintln!("Error sending key event: {:?}", e);
+                }
+            }
+        }) {
+            eprintln!("Error listening to global key events: {:?}", error);
+        }
+    });
+
+    // Recibir eventos de teclado en el bucle de Tokio
+    while let Some(key) = rx.recv().await {
+        let message = serde_json::json!({
+            "action": "key_press",
+            "key": key,
+        });
+
+        let manager = window_manager.lock().await;
+        manager.broadcast_message(&message.to_string()).await;
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct MyMessage {
     action: String,
@@ -98,35 +150,50 @@ struct MyMessage {
 }
 
 async fn handle_connection(
-    ws: warp::ws::WebSocket,
+    ws: WebSocket,
     window_manager: Arc<Mutex<WebSocketWindowManager>>,
 ) {
     println!("New WebSocket connection established!");
 
-    // Split the WebSocket into sender and receiver
-    let (mut tx, mut rx) = ws.split();
+    let (tx, mut rx) = ws.split();
+    let (client_tx, mut client_rx) = unbounded_channel();
 
-    // Listen for client messages
+    let client_id = uuid::Uuid::new_v4().to_string();
+    {
+        let manager = window_manager.lock().await;
+        manager.register_client(client_id.clone(), client_tx).await;
+    }
+
+    // Envolver `tx` en un `Arc<Mutex>` para compartirlo de manera segura
+    let tx = Arc::new(Mutex::new(tx as futures_util::stream::SplitSink<WebSocket, Message>));
+
+    // Clonar `tx` para usarlo en el `tokio::spawn`
+    let tx_clone = Arc::clone(&tx);
+
+    tokio::spawn(async move {
+        while let Some(message) = client_rx.recv().await {
+            let mut tx = tx_clone.lock().await;
+            let _ = tx.send(message).await;
+        }
+    });
+
     while let Some(result) = rx.next().await {
         match result {
             Ok(message) => {
                 if let Ok(text) = message.to_str() {
                     println!("Received: {}", text);
 
-                    // Try to deserialize the received message as JSON
                     match serde_json::from_str::<MyMessage>(text) {
                         Ok(parsed_message) => {
-                            // Clone the window manager for async use
                             let manager_clone = Arc::clone(&window_manager);
 
-                            // Handle the message
                             tokio::spawn(async move {
                                 handle_message(parsed_message, manager_clone).await;
                             });
 
-                            // Send a response back
                             let response = format!("Server processed: {}", text);
-                            let _ = tx.send(warp::ws::Message::text(response)).await;
+                            let mut tx = tx.lock().await;
+                            let _ = tx.send(Message::text(response)).await;
                         }
                         Err(_) => {
                             eprintln!("Invalid JSON received");
@@ -140,10 +207,15 @@ async fn handle_connection(
             }
         }
     }
+
+    {
+        let manager = window_manager.lock().await;
+        manager.clients.lock().await.remove(&client_id);
+    }
 }
 
 async fn handle_message(message: MyMessage, window_manager: Arc<Mutex<WebSocketWindowManager>>) {
-    let mut manager = window_manager.lock().await;
+    let manager = window_manager.lock().await;
 
     match message.action.as_str() {
         "create_window" => {
@@ -172,10 +244,8 @@ async fn handle_message(message: MyMessage, window_manager: Arc<Mutex<WebSocketW
     }
 }
 
-// In your main function, set up the WebSocket server with the window manager
 #[tokio::main]
 async fn main() {
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -186,6 +256,12 @@ async fn main() {
             let window_manager = Arc::new(Mutex::new(WebSocketWindowManager::new(app_handle)));
 
             let ws_window_manager = Arc::clone(&window_manager);
+
+            // Iniciar la escucha de eventos de teclado globales
+            let key_listener_manager = Arc::clone(&window_manager);
+            tokio::spawn(async move {
+                listen_global_key_events(key_listener_manager).await;
+            });
 
             tokio::spawn(async move {
                 let websocket_route =
@@ -211,6 +287,7 @@ async fn main() {
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
+
 #[tauri::command]
 fn get_file_path(file_path: String) -> String {
     // Aquí puedes procesar el archivo según sea necesario
