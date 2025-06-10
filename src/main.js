@@ -221,7 +221,8 @@ class WindowManager {
       const message = {
           action: "create_window",
           label: windowLabel,
-          url: url
+          url: url,
+          transparent: true
       };
 
       const success = this.ws.send(message);
