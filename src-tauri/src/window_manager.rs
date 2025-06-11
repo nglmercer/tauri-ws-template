@@ -53,13 +53,6 @@ impl WebSocketWindowManager {
             .resizable(true)
             .transparent(is_transparent);
 
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        {
-            if is_transparent {
-                window_builder = window_builder.decorations(false);
-            }
-        }
-        
         let window = window_builder.build().map_err(|e| format!("Failed to create webview: {}", e))?;
 
         let window_info = WindowInfo {
