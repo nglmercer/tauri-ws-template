@@ -4259,28 +4259,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tauriarm"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "enigo",
- "env_logger",
- "futures-util",
- "rdev",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-shell",
- "tokio",
- "url",
- "uuid",
- "warp",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5095,6 +5073,28 @@ dependencies = [
  "raw-window-handle",
  "windows-sys 0.59.0",
  "windows-version",
+]
+
+[[package]]
+name = "window_manager"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "enigo",
+ "env_logger",
+ "futures-util",
+ "rdev",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-shell",
+ "tokio",
+ "url",
+ "uuid",
+ "warp",
 ]
 
 [[package]]

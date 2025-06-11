@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauriarm",
+  "productName": "windowmanager",
   "version": "0.1.0",
-  "identifier": "com.tauriarm.app",
+  "identifier": "com.windowmanager.app",
   "build": {
     "frontendDist": "../src"
   },
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "tauriarm",
+        "title": "windowmanager",
         "width": 800,
         "height": 600,
         "resizable": true,
