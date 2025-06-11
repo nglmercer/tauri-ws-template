@@ -44,7 +44,7 @@ Los archivos de construcción se encontrarán en la carpeta `src-tauri/target/re
 
 ## Descargas
 
-Puedes descargar la última versión de la aplicación desde la [página de releases](/releases).
+Puedes descargar la última versión de la aplicación desde la [página de releases](https://github.com/nglmercer/tauri-ws-template/releases).
 
 ## Tecnologías Utilizadas
 
