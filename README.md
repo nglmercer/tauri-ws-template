@@ -18,7 +18,7 @@ Una aplicación de escritorio construida con Tauri que permite gestionar ventana
 
 1. Clona el repositorio:
 ```bash
-git clone [URL_DEL_REPOSITORIO]
+git clone https://github.com/nglmercer/tauri-ws-template
 cd window_manager
 ```
 
