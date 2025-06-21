@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-// MODIFICADO: Eliminado PhysicalPosition que no se usaba.
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Mutex;
 use url::Url;
@@ -48,11 +47,11 @@ impl WebSocketWindowManager {
             return Ok(());
         }
 
-        let mut window_builder = WebviewWindowBuilder::new(&self.app_handle, label, WebviewUrl::External(parsed_url.clone()))
-        .title(format!("Window: {}", label))
-        .resizable(true)
-        .transparent(is_transparent)
-        .always_on_top(always_on_top);
+        let window_builder = WebviewWindowBuilder::new(&self.app_handle, label, WebviewUrl::External(parsed_url.clone()))
+            .title(format!("Window: {}", label))
+            .resizable(true)
+            .transparent(is_transparent)
+            .always_on_top(always_on_top);
 
         let window = window_builder.build().map_err(|e| format!("Failed to create webview: {}", e))?;
 
@@ -106,60 +105,129 @@ impl WebSocketWindowManager {
     pub async fn toggle_window_transparency(&self, label: &str) -> Result<bool, String> {
         let mut windows = self.windows.lock().await;
 
-        if let Some(existing_window) = self.app_handle.get_webview_window(label) {
-            if let Some(window_info) = windows.get(label).cloned() {
+        if let Some(window_info) = windows.get(label).cloned() {
+            if let Some(existing_window) = self.app_handle.get_webview_window(label) {
                 let new_transparent_state = !window_info.is_transparent;
 
-                // 1. Guardar el estado de la ventana actual
+                // 1. Obtener el estado actual de la ventana
                 let url = Url::parse(&window_info.url).map_err(|e| format!("Invalid stored URL: {}", e))?;
                 let size = existing_window.outer_size().map_err(|e| format!("Failed to get size: {}", e))?;
                 let position = existing_window.outer_position().map_err(|e| format!("Failed to get position: {}", e))?;
-                let title = existing_window.title().map_err(|e| format!("Failed to get title: {}", e))?;
 
-                // 2. Cerrar la ventana actual
-                existing_window.close().map_err(|e| format!("Failed to close old window: {}", e))?;
+                // 2. Generar un label temporal único
+                let temp_label = format!("{}_temp_{}", label, chrono::Utc::now().timestamp_millis());
 
-                // 3. Crear una nueva ventana con la transparencia invertida
-                let new_window_builder = WebviewWindowBuilder::new(
+                // 3. Crear la nueva ventana con el label temporal
+                let mut new_window_builder = WebviewWindowBuilder::new(
                     &self.app_handle,
-                    label,
+                    &temp_label,
                     WebviewUrl::External(url),
                 )
-                .title(title)
-                // LÍNEA CORREGIDA: Convertimos i32 a f64
-                .position(position.x as f64, position.y as f64) 
-                // También aplicamos la conversión al tamaño para ser consistentes
-                .inner_size(size.width as f64, size.height as f64) 
+                .position(position.x as f64, position.y as f64)
+                .inner_size(size.width as f64, size.height as f64)
                 .resizable(true)
-                .transparent(new_transparent_state);
+                .transparent(new_transparent_state)
+                .always_on_top(window_info.is_always_on_top);
 
-                // En Windows, las ventanas transparentes no deben tener decoraciones.
+                // En Windows, las ventanas transparentes no deben tener decoraciones
                 #[cfg(target_os = "windows")]
-                let new_window_builder = new_window_builder.decorations(!new_transparent_state);
-                
-                let _new_window = new_window_builder.build().map_err(|e| format!("Failed to create new window: {}", e))?;
+                {
+                    new_window_builder = new_window_builder.decorations(!new_transparent_state);
+                }
 
-                // 4. Actualizar nuestra información de estado
+                let new_window = new_window_builder.build().map_err(|e| format!("Failed to create new window: {}", e))?;
+
+                // 4. Cerrar la ventana original
+                existing_window.close().map_err(|e| format!("Failed to close old window: {}", e))?;
+
+                // 5. Esperar un poco para asegurar que la ventana original se haya cerrado
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // 6. Cambiar el label de la nueva ventana al label original
+                // Nota: En Tauri, no se puede cambiar el label de una ventana existente,
+                // así que necesitamos crear otra ventana con el label correcto
+                let final_window_builder = WebviewWindowBuilder::new(
+                    &self.app_handle,
+                    label,
+                    WebviewUrl::External(Url::parse(&window_info.url).unwrap()),
+                )
+                .position(position.x as f64, position.y as f64)
+                .inner_size(size.width as f64, size.height as f64)
+                .resizable(true)
+                .transparent(new_transparent_state)
+                .always_on_top(window_info.is_always_on_top);
+
+                #[cfg(target_os = "windows")]
+                let final_window_builder = final_window_builder.decorations(!new_transparent_state);
+
+                let final_window = final_window_builder.build().map_err(|e| format!("Failed to create final window: {}", e))?;
+
+                // 7. Cerrar la ventana temporal
+                new_window.close().map_err(|e| format!("Failed to close temp window: {}", e))?;
+
+                // 8. Registrar eventos para la nueva ventana
+                let label_clone = label.to_string();
+                let windows_clone = Arc::clone(&self.windows);
+                
+                final_window.on_window_event(move |event| {
+                    let label = label_clone.clone();
+                    let windows = Arc::clone(&windows_clone);
+                    
+                    let event_data = match event {
+                        tauri::WindowEvent::Focused(focused) => Some(("focused", *focused)),
+                        tauri::WindowEvent::CloseRequested { .. } => Some(("close", false)),
+                        _ => None,
+                    };
+                    
+                    if let Some((event_type, focused)) = event_data {
+                        tokio::spawn(async move {
+                            let mut windows = windows.lock().await;
+                            if let Some(window_info) = windows.get_mut(&label) {
+                                match event_type {
+                                    "focused" => {
+                                        window_info.is_focused = focused;
+                                    }
+                                    "close" => {
+                                        windows.remove(&label);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        });
+                    }
+                });
+
+                // 9. Actualizar la información de la ventana
                 if let Some(info_to_update) = windows.get_mut(label) {
                     info_to_update.is_transparent = new_transparent_state;
-                    // NOTA: Para ser 100% robusto, deberíamos volver a registrar `on_window_event` en la nueva ventana.
-                    // Lo omito aquí para mantener el código simple, pero es una mejora a considerar.
-                } else {
-                    let mut new_info = window_info;
-                    new_info.is_transparent = new_transparent_state;
-                    windows.insert(label.to_string(), new_info);
+                    info_to_update.is_visible = true;
+                    info_to_update.is_focused = true;
                 }
 
                 Ok(new_transparent_state)
             } else {
-                Err(format!("Window info for '{}' not found in manager", label))
+                Err(format!("Window with label '{}' not found", label))
             }
         } else {
-            Err(format!("Window with label '{}' not found", label))
+            Err(format!("Window info for '{}' not found in manager", label))
         }
     }
 
-    // El resto de las funciones están bien.
+    // Método alternativo más simple que solo actualiza el estado interno
+    // (no cambia realmente la transparencia de la ventana, solo el estado)
+    pub async fn set_transparency_state(&self, label: &str, is_transparent: bool) -> Result<bool, String> {
+        let mut windows = self.windows.lock().await;
+        
+        if let Some(window_info) = windows.get_mut(label) {
+            window_info.is_transparent = is_transparent;
+            Ok(is_transparent)
+        } else {
+            Err(format!("Window info for '{}' not found in manager", label))
+        }
+    }
+
+    // El resto de los métodos permanecen sin cambios...
+    
     pub async fn reload_window(&self, label: &str) -> Result<(), String> {
         if let Some(window) = self.app_handle.get_webview_window(label) {
             window.eval("window.location.reload();")
@@ -190,7 +258,6 @@ impl WebSocketWindowManager {
         }
     }
 
-    // ... (pega aquí el resto de tus funciones de WebSocketWindowManager sin cambios)
     pub async fn close_window(&self, label: &str) -> Result<(), String> {
         let mut windows = self.windows.lock().await;
 
@@ -216,7 +283,6 @@ impl WebSocketWindowManager {
                 .set_focus()
                 .map_err(|e| format!("Error focusing window: {}", e))?;
             
-            // Actualizar estado
             if let Some(window_info) = windows.get_mut(label) {
                 window_info.is_visible = true;
                 window_info.is_focused = true;
@@ -236,7 +302,6 @@ impl WebSocketWindowManager {
                 .hide()
                 .map_err(|e| format!("Error hiding window: {}", e))?;
             
-            // Actualizar estado
             if let Some(window_info) = windows.get_mut(label) {
                 window_info.is_visible = false;
                 window_info.is_focused = false;
@@ -280,7 +345,6 @@ impl WebSocketWindowManager {
                 .set_title(new_title)
                 .map_err(|e| format!("Error setting window title: {}", e))?;
             
-            // Actualizar información
             if let Some(window_info) = windows.get_mut(label) {
                 window_info.title = new_title.to_string();
             }
@@ -290,7 +354,6 @@ impl WebSocketWindowManager {
             Err(format!("Window with label '{}' not found", label))
         }
     }
-
 
     pub async fn window_exists(&self, label: &str) -> bool {
         let windows = self.windows.lock().await;
@@ -322,7 +385,7 @@ impl WebSocketWindowManager {
             windows.remove(&label);
         }
     }
-        // NUEVO MÉTODO: Toggle always on top
+
     pub async fn toggle_always_on_top(&self, label: &str) -> Result<bool, String> {
         let mut windows = self.windows.lock().await;
 
@@ -330,11 +393,9 @@ impl WebSocketWindowManager {
             if let Some(window_info) = windows.get_mut(label) {
                 let new_always_on_top = !window_info.is_always_on_top;
                 
-                // Aplicar el cambio a la ventana
                 window.set_always_on_top(new_always_on_top)
                     .map_err(|e| format!("Failed to set always on top: {}", e))?;
                 
-                // Actualizar el estado
                 window_info.is_always_on_top = new_always_on_top;
                 
                 Ok(new_always_on_top)
@@ -346,17 +407,14 @@ impl WebSocketWindowManager {
         }
     }
 
-    // NUEVO MÉTODO: Set always on top (para establecer un valor específico)
     pub async fn set_always_on_top(&self, label: &str, always_on_top: bool) -> Result<(), String> {
         let mut windows = self.windows.lock().await;
 
         if let Some(window) = self.app_handle.get_webview_window(label) {
             if let Some(window_info) = windows.get_mut(label) {
-                // Aplicar el cambio a la ventana
                 window.set_always_on_top(always_on_top)
                     .map_err(|e| format!("Failed to set always on top: {}", e))?;
                 
-                // Actualizar el estado
                 window_info.is_always_on_top = always_on_top;
                 
                 Ok(())
