@@ -17,6 +17,7 @@ pub struct WindowInfo {
     pub is_visible: bool,
     pub is_focused: bool,
     pub is_transparent: bool,
+    pub is_always_on_top: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -33,8 +34,7 @@ impl WebSocketWindowManager {
         }
     }
 
-    // ... (create_or_open_window y otras funciones no necesitan cambios)
-    pub async fn create_or_open_window(&self, label: &str, url: &str, is_transparent: bool) -> Result<(), String> {
+    pub async fn create_or_open_window(&self, label: &str, url: &str, is_transparent: bool, always_on_top: bool) -> Result<(), String> {
         let parsed_url = Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
         let mut windows = self.windows.lock().await;
 
@@ -49,9 +49,10 @@ impl WebSocketWindowManager {
         }
 
         let mut window_builder = WebviewWindowBuilder::new(&self.app_handle, label, WebviewUrl::External(parsed_url.clone()))
-            .title(format!("Window: {}", label))
-            .resizable(true)
-            .transparent(is_transparent);
+        .title(format!("Window: {}", label))
+        .resizable(true)
+        .transparent(is_transparent)
+        .always_on_top(always_on_top);
 
         let window = window_builder.build().map_err(|e| format!("Failed to create webview: {}", e))?;
 
@@ -62,7 +63,8 @@ impl WebSocketWindowManager {
             created_at: chrono::Utc::now().timestamp(),
             is_visible: true,
             is_focused: true,
-            is_transparent, // <--- GUARDAMOS EL ESTADO CORRECTO
+            is_transparent,
+            is_always_on_top: always_on_top,
         };
 
         windows.insert(label.to_string(), window_info);
@@ -318,6 +320,51 @@ impl WebSocketWindowManager {
 
         for label in to_remove {
             windows.remove(&label);
+        }
+    }
+        // NUEVO MÉTODO: Toggle always on top
+    pub async fn toggle_always_on_top(&self, label: &str) -> Result<bool, String> {
+        let mut windows = self.windows.lock().await;
+
+        if let Some(window) = self.app_handle.get_webview_window(label) {
+            if let Some(window_info) = windows.get_mut(label) {
+                let new_always_on_top = !window_info.is_always_on_top;
+                
+                // Aplicar el cambio a la ventana
+                window.set_always_on_top(new_always_on_top)
+                    .map_err(|e| format!("Failed to set always on top: {}", e))?;
+                
+                // Actualizar el estado
+                window_info.is_always_on_top = new_always_on_top;
+                
+                Ok(new_always_on_top)
+            } else {
+                Err(format!("Window info for '{}' not found", label))
+            }
+        } else {
+            Err(format!("Window with label '{}' not found", label))
+        }
+    }
+
+    // NUEVO MÉTODO: Set always on top (para establecer un valor específico)
+    pub async fn set_always_on_top(&self, label: &str, always_on_top: bool) -> Result<(), String> {
+        let mut windows = self.windows.lock().await;
+
+        if let Some(window) = self.app_handle.get_webview_window(label) {
+            if let Some(window_info) = windows.get_mut(label) {
+                // Aplicar el cambio a la ventana
+                window.set_always_on_top(always_on_top)
+                    .map_err(|e| format!("Failed to set always on top: {}", e))?;
+                
+                // Actualizar el estado
+                window_info.is_always_on_top = always_on_top;
+                
+                Ok(())
+            } else {
+                Err(format!("Window info for '{}' not found", label))
+            }
+        } else {
+            Err(format!("Window with label '{}' not found", label))
         }
     }
 }

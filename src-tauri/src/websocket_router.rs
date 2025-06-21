@@ -18,7 +18,8 @@ pub struct WebSocketMessage {
     pub url: Option<String>,
     pub data: Option<serde_json::Value>,
     pub params: Option<HashMap<String, String>>,
-    pub transparent: Option<bool>, // <--- NUEVO CAMPO
+    pub transparent: Option<bool>,
+    pub always_on_top: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -129,7 +130,6 @@ impl WebSocketRouter {
 
 
     async fn route_message(&self, message: WebSocketMessage) -> WebSocketResponse {
-        // MODIFICADO: Añadimos las nuevas rutas
         match message.action.as_str() {
             "create_window" => self.handle_create_window(message).await,
             "close_window" => self.handle_close_window(message).await,
@@ -137,30 +137,32 @@ impl WebSocketRouter {
             "get_window_info" => self.handle_get_window_info(message).await,
             "focus_window" => self.handle_focus_window(message).await,
             "ping" => self.handle_ping(message).await,
-            
-            // NUEVAS RUTAS
             "toggle_transparency" => self.handle_toggle_transparency(message).await,
             "reload_window" => self.handle_reload_window(message).await,
             "navigate_window" => self.handle_navigate_window(message).await,
-
+            
+            // NUEVAS RUTAS PARA ALWAYS ON TOP
+            "toggle_always_on_top" => self.handle_toggle_always_on_top(message).await,
+            "set_always_on_top" => self.handle_set_always_on_top(message).await,
+    
             _ => WebSocketResponse::error(&message.action, "Unknown action"),
         }
     }
     
-    // ... (los handlers existentes siguen aquí)
+    // Modificar handle_create_window para incluir always_on_top:
     async fn handle_create_window(&self, message: WebSocketMessage) -> WebSocketResponse {
         if let (Some(label), Some(url)) = (&message.label, &message.url) {
-            // Obtenemos el valor de transparencia, si no se envía, por defecto es 'false'.
             let is_transparent = message.transparent.unwrap_or(false);
+            let always_on_top = message.always_on_top.unwrap_or(false); // <--- NUEVO
 
             let manager = self.window_manager.lock().await;
-            // Pasamos el nuevo parámetro a la función del window_manager
-            match manager.create_or_open_window(label, url, is_transparent).await {
+            match manager.create_or_open_window(label, url, is_transparent, always_on_top).await {
                 Ok(_) => {
                     let data = serde_json::json!({
                         "label": label,
                         "url": url,
-                        "transparent": is_transparent
+                        "transparent": is_transparent,
+                        "always_on_top": always_on_top // <--- INCLUIR EN RESPUESTA
                     });
                     WebSocketResponse::success("create_window", "Window created successfully", Some(data))
                 }
@@ -319,5 +321,44 @@ impl WebSocketRouter {
     pub async fn get_connected_clients(&self) -> Vec<String> {
         let clients = self.clients.lock().await;
         clients.keys().cloned().collect()
+    }
+        // NUEVO HANDLER: Toggle always on top
+    async fn handle_toggle_always_on_top(&self, message: WebSocketMessage) -> WebSocketResponse {
+        if let Some(label) = &message.label {
+            let manager = self.window_manager.lock().await;
+            match manager.toggle_always_on_top(label).await {
+                Ok(new_state) => {
+                    let data = serde_json::json!({
+                        "label": label,
+                        "is_always_on_top": new_state,
+                    });
+                    WebSocketResponse::success("toggle_always_on_top", "Always on top toggled", Some(data))
+                }
+                Err(e) => WebSocketResponse::error("toggle_always_on_top", &format!("Failed to toggle always on top: {}", e)),
+            }
+        } else {
+            WebSocketResponse::error("toggle_always_on_top", "Missing window label")
+        }
+    }
+
+    // NUEVO HANDLER: Set always on top
+    async fn handle_set_always_on_top(&self, message: WebSocketMessage) -> WebSocketResponse {
+        if let Some(label) = &message.label {
+            let always_on_top = message.always_on_top.unwrap_or(false);
+            
+            let manager = self.window_manager.lock().await;
+            match manager.set_always_on_top(label, always_on_top).await {
+                Ok(_) => {
+                    let data = serde_json::json!({
+                        "label": label,
+                        "is_always_on_top": always_on_top,
+                    });
+                    WebSocketResponse::success("set_always_on_top", "Always on top set successfully", Some(data))
+                }
+                Err(e) => WebSocketResponse::error("set_always_on_top", &format!("Failed to set always on top: {}", e)),
+            }
+        } else {
+            WebSocketResponse::error("set_always_on_top", "Missing window label")
+        }
     }
 }
